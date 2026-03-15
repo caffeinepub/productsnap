@@ -37,6 +37,7 @@
     "@dfinity/candid": "~3.3.0",
     "@dfinity/principal": "~3.3.0",
     "@icp-sdk/core": "~4.1.0",
+    "@imgly/background-removal": "^1.4.5",
     "@react-three/cannon": "~6.6.0",
     "@react-three/drei": "~10.0.8",
     "@react-three/fiber": "~9.1.2",

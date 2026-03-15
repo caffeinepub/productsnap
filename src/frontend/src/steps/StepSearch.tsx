@@ -9,7 +9,7 @@ import {
   Search,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useSearchImages } from "../hooks/useQueries";
 
@@ -18,19 +18,56 @@ type ImageResult = { url: string; thumbnail: string; title: string };
 function parseResults(raw: string): ImageResult[] {
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .map((item: unknown) => {
-        if (typeof item === "string") {
-          return { url: item, thumbnail: item, title: "" };
-        }
-        const obj = item as Record<string, string>;
-        const url = obj.url ?? obj.link ?? obj.image ?? "";
-        const thumbnail = obj.thumbnail ?? obj.image ?? url;
-        const title = obj.title ?? "";
-        return { url, thumbnail, title };
-      })
-      .filter((r) => r.url);
+
+    // Openverse format: { count, results: [...] }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray(parsed.results)
+    ) {
+      return (parsed.results as Array<Record<string, string>>)
+        .map((item) => ({
+          url: item.url ?? "",
+          thumbnail: item.thumbnail ?? item.url ?? "",
+          title: item.title ?? "",
+        }))
+        .filter((r) => r.url);
+    }
+
+    // DuckDuckGo format: { RelatedTopics: [...] }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Array.isArray(parsed.RelatedTopics)
+    ) {
+      return (parsed.RelatedTopics as Array<Record<string, unknown>>)
+        .map((topic) => {
+          const icon = topic.Icon as Record<string, string> | undefined;
+          const url = icon?.URL ?? "";
+          return { url, thumbnail: url, title: (topic.Text as string) ?? "" };
+        })
+        .filter((r) => r.url);
+    }
+
+    // Array fallback
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item: unknown) => {
+          if (typeof item === "string") {
+            return { url: item, thumbnail: item, title: "" };
+          }
+          const obj = item as Record<string, string>;
+          const url = obj.url ?? obj.link ?? obj.image ?? "";
+          const thumbnail = obj.thumbnail ?? obj.image ?? url;
+          const title = obj.title ?? "";
+          return { url, thumbnail, title };
+        })
+        .filter((r) => r.url);
+    }
+
+    return [];
   } catch {
     return [];
   }
@@ -49,7 +86,9 @@ export function StepSearch({
 }: StepSearchProps) {
   const [query, setQuery] = useState(productName);
   const [activeQuery, setActiveQuery] = useState(productName);
-  const [enabled, setEnabled] = useState(productName.trim().length > 0);
+  const [enabled, setEnabled] = useState(false);
+  // Use a ref to track if the initial auto-search has been scheduled
+  const initialSearchDone = useRef(false);
 
   const {
     data: rawData,
@@ -58,6 +97,18 @@ export function StepSearch({
     refetch,
   } = useSearchImages(activeQuery, enabled);
   const results = rawData ? parseResults(rawData) : [];
+
+  // Auto-trigger search with delay on first mount if productName is set
+  useEffect(() => {
+    if (initialSearchDone.current || !productName.trim()) return;
+    initialSearchDone.current = true;
+    const timer = setTimeout(() => {
+      setQuery(productName);
+      setActiveQuery(productName);
+      setEnabled(true);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [productName]);
 
   useEffect(() => {
     if (productName.trim()) {

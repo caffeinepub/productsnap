@@ -95,7 +95,7 @@ actor {
   };
 
   public shared ({ caller }) func searchImages(searchQuery : Text) : async Text {
-    let url = "https://api.duckduckgo.com/?q=" # searchQuery # "&format=json&iax=images";
+    let url = "https://api.openverse.org/v1/images/?q=" # searchQuery # "&page_size=18";
     await OutCall.httpGetRequest(url, [], transform);
   };
 

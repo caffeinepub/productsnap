@@ -55,13 +55,19 @@ export function useCreateEntry() {
 }
 
 export function useSearchImages(query: string, enabled: boolean) {
-  const { actor, isFetching } = useActor();
   return useQuery<string>({
     queryKey: ["search", query],
     queryFn: async () => {
-      if (!actor) return "[]";
-      return actor.searchImages(query);
+      const encoded = encodeURIComponent(query.trim());
+      const resp = await fetch(
+        `https://api.openverse.org/v1/images/?q=${encoded}&page_size=18`,
+        { headers: { Accept: "application/json" } },
+      );
+      if (!resp.ok) throw new Error(`Search failed: ${resp.status}`);
+      const data = await resp.json();
+      return JSON.stringify(data);
     },
-    enabled: !!actor && !isFetching && enabled && query.trim().length > 0,
+    enabled: enabled && query.trim().length > 0,
+    retry: 1,
   });
 }

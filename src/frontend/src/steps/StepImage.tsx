@@ -9,6 +9,7 @@ import {
   Sun,
   Upload,
   Wand2,
+  ZoomIn,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useRef, useState } from "react";
@@ -63,11 +64,6 @@ const SHADOW_OPTIONS: { key: ShadowType; label: string }[] = [
   { key: "hard", label: "Hard" },
   { key: "bottom", label: "Bottom" },
 ];
-
-// Escape Rollup static analysis for optional peer dependency
-const dynamicImport = new Function("pkg", "return import(pkg)") as (
-  pkg: string,
-) => Promise<any>;
 
 function getShadowStyle(shadow: ShadowType): string {
   switch (shadow) {
@@ -194,6 +190,10 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [lastSizeKb, setLastSizeKb] = useState<number | null>(null);
   const [showCamera, setShowCamera] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [nativeZoomSupported, setNativeZoomSupported] = useState<
+    boolean | null
+  >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -215,7 +215,43 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
 
   const handleStartCamera = async () => {
     setShowCamera(true);
+    setZoomLevel(1);
     await startCamera();
+    // After camera starts, check native zoom support
+    setTimeout(() => {
+      if (videoRef.current) {
+        const stream = (videoRef.current as HTMLVideoElement)
+          .srcObject as MediaStream | null;
+        if (stream) {
+          const track = stream.getVideoTracks()[0];
+          if (track) {
+            const caps = track.getCapabilities() as Record<string, unknown>;
+            setNativeZoomSupported("zoom" in caps);
+          }
+        }
+      }
+    }, 800);
+  };
+
+  const handleZoomChange = async (value: number) => {
+    setZoomLevel(value);
+    if (videoRef.current) {
+      const stream = (videoRef.current as HTMLVideoElement)
+        .srcObject as MediaStream | null;
+      if (stream) {
+        const track = stream.getVideoTracks()[0];
+        if (track && nativeZoomSupported) {
+          try {
+            await track.applyConstraints({
+              advanced: [{ zoom: value } as MediaTrackConstraintSet],
+            });
+            return;
+          } catch {
+            // fall through to CSS zoom
+          }
+        }
+      }
+    }
   };
 
   const handleCapturePhoto = async () => {
@@ -223,6 +259,7 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     if (!file) return;
     await stopCamera();
     setShowCamera(false);
+    setZoomLevel(1);
     processFile(file);
   };
 
@@ -239,8 +276,8 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setProcessedUrl(objectUrl);
     setPhase("processing");
     try {
-      const mod = await dynamicImport("@imgly/background-removal");
-      const resultBlob = await mod.removeBackground(file);
+      const { removeBackground } = await import("@imgly/background-removal");
+      const resultBlob = await removeBackground(file);
       const resultUrl = URL.createObjectURL(resultBlob);
       setProcessedUrl(resultUrl);
       setPhase("confirm-removal");
@@ -287,6 +324,9 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setPhase("capture");
   };
 
+  // CSS zoom scale (used when native zoom not supported)
+  const cssZoomScale = nativeZoomSupported === false ? zoomLevel : 1;
+
   return (
     <div className="flex flex-col h-full px-4 gap-4 overflow-y-auto pb-2">
       <motion.div
@@ -328,7 +368,11 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                     autoPlay
                     playsInline
                     muted
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover transition-transform duration-200"
+                    style={{
+                      transform: `scale(${cssZoomScale})`,
+                      transformOrigin: "center",
+                    }}
                   />
                   <canvas ref={canvasRef} className="hidden" />
                   {isLoading && (
@@ -344,6 +388,25 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                     </div>
                   )}
                 </div>
+
+                {/* Zoom slider */}
+                <div className="flex items-center gap-3 px-1">
+                  <ZoomIn className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+                  <input
+                    type="range"
+                    min={1}
+                    max={3}
+                    step={0.1}
+                    value={zoomLevel}
+                    onChange={(e) => handleZoomChange(Number(e.target.value))}
+                    className="flex-1 h-1.5 accent-primary cursor-pointer"
+                    aria-label="Zoom"
+                  />
+                  <span className="text-xs text-muted-foreground w-8 text-right">
+                    {zoomLevel.toFixed(1)}×
+                  </span>
+                </div>
+
                 <div className="flex gap-3">
                   <Button
                     variant="outline"
@@ -351,6 +414,7 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                     onClick={() => {
                       stopCamera();
                       setShowCamera(false);
+                      setZoomLevel(1);
                     }}
                   >
                     Cancel
