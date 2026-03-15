@@ -277,7 +277,10 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setPhase("processing");
     try {
       const { removeBackground } = await import("@imgly/background-removal");
-      const resultBlob = await removeBackground(file);
+      const resultBlob = await removeBackground(file, {
+        publicPath:
+          "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/dist/",
+      });
       const resultUrl = URL.createObjectURL(resultBlob);
       setProcessedUrl(resultUrl);
       setPhase("confirm-removal");
