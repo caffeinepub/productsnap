@@ -199,12 +199,10 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
   const {
     isActive,
     isLoading,
-    isSupported,
     error,
     startCamera,
     stopCamera,
     capturePhoto,
-    switchCamera,
     videoRef,
     canvasRef,
   } = useCamera({
@@ -276,16 +274,70 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setProcessedUrl(objectUrl);
     setPhase("processing");
     try {
-      const { removeBackground } = await import("@imgly/background-removal");
-      const resultBlob = await removeBackground(file, {
-        publicPath:
-          "https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/dist/",
+      // Use @huggingface/transformers in single-thread mode — no SharedArrayBuffer required
+      const { env, AutoModel, AutoProcessor, RawImage } = await import(
+        "@huggingface/transformers"
+      );
+
+      // Single-thread mode — no SharedArrayBuffer required
+      (env.backends as any).onnx.wasm.numThreads = 1;
+      env.allowLocalModels = false;
+      env.useBrowserCache = true;
+
+      const MODEL_ID = "briaai/RMBG-1.4";
+      const [model, processor] = await Promise.all([
+        AutoModel.from_pretrained(MODEL_ID, {
+          config: { model_type: "custom" } as any,
+          dtype: "fp32" as any,
+        }),
+        AutoProcessor.from_pretrained(MODEL_ID, {
+          config: {
+            do_normalize: true,
+            do_pad: false,
+            do_rescale: true,
+            do_resize: true,
+            image_mean: [0.5, 0.5, 0.5],
+            feature_extractor_type: "ImageFeatureExtractor",
+            image_std: [1, 1, 1],
+            resample: 2,
+            rescale_factor: 0.00392156862745098,
+            size: { width: 1024, height: 1024 },
+          },
+        }),
+      ]);
+
+      const image = await RawImage.fromBlob(file);
+      const { pixel_values } = await (processor as any)(image);
+      const { output } = await (model as any)({ input: pixel_values });
+
+      const mask = await (
+        RawImage.fromTensor((output[0] as any).mul(255).to("uint8")) as any
+      ).resize(image.width, image.height);
+
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(await createImageBitmap(file), 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < mask.data.length; i++) {
+        imgData.data[4 * i + 3] = mask.data[i];
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      const resultBlob: Blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("Blob failed"))),
+          "image/png",
+        );
       });
+
       const resultUrl = URL.createObjectURL(resultBlob);
       setProcessedUrl(resultUrl);
       setPhase("confirm-removal");
-    } catch {
-      toast.info("Background removal unavailable \u2014 using original image.");
+    } catch (err) {
+      console.error("[Background Removal] Failed:", err);
+      toast.info("Background removal unavailable — using original image.");
       setPhase("background");
     }
   }, []);
@@ -422,23 +474,11 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                   >
                     Cancel
                   </Button>
-                  {isSupported && (
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      className="h-12 w-12"
-                      onClick={() => switchCamera()}
-                      disabled={isLoading || !isActive}
-                    >
-                      <Camera className="w-4 h-4" />
-                    </Button>
-                  )}
                   <Button
                     className="flex-1 h-12 bg-primary text-primary-foreground font-600"
                     onClick={handleCapturePhoto}
                     disabled={!isActive || isLoading}
                   >
-                    <Camera className="w-4 h-4 mr-2" />
                     Capture
                   </Button>
                 </div>
@@ -447,9 +487,8 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
               <div className="flex flex-col gap-3">
                 <button
                   type="button"
-                  className="w-full rounded-2xl border-2 border-dashed border-border bg-card/50 flex flex-col items-center justify-center gap-3 py-10 hover:border-primary/50 hover:bg-primary/5 transition-all disabled:opacity-50"
+                  className="w-full rounded-2xl border-2 border-dashed border-border bg-card/50 flex flex-col items-center justify-center gap-3 py-10 hover:border-primary/50 hover:bg-primary/5 transition-all"
                   onClick={handleStartCamera}
-                  disabled={isSupported === false}
                 >
                   <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center">
                     <Camera className="w-7 h-7 text-primary" />
@@ -534,6 +573,9 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
               </p>
               <p className="text-sm text-muted-foreground mt-1">
                 AI is isolating your product...
+              </p>
+              <p className="text-xs text-muted-foreground mt-1 opacity-70">
+                First use downloads AI models (~40 MB)
               </p>
             </div>
             {capturedObjectUrl && (
