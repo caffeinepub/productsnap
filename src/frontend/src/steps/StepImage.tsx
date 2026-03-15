@@ -86,81 +86,218 @@ function getShadowStyle(shadow: ShadowType): string {
   }
 }
 
-async function removeBackground(imageUrl: string): Promise<string> {
-  try {
-    const transformers = await import(
-      /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js"
-    );
-    const { AutoModel, AutoProcessor, RawImage, env } = transformers;
+async function blobUrlToDataUrl(blobUrl: string): Promise<string> {
+  const response = await fetch(blobUrl);
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
-    (env as Record<string, unknown>).allowLocalModels = false;
-    if ((env as Record<string, unknown>).backends) {
-      const backends = (env as Record<string, unknown>).backends as Record<
-        string,
-        unknown
-      >;
-      if (backends.onnx) {
-        (backends.onnx as Record<string, unknown>).wasm = {
-          ...((backends.onnx as Record<string, unknown>).wasm as object),
-          numThreads: 1,
-        };
-      }
-    }
-
-    const model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
-      config: { model_type: "custom" },
-    });
-    const processor = await AutoProcessor.from_pretrained("briaai/RMBG-1.4", {
-      config: {
-        do_normalize: true,
-        do_pad: false,
-        do_rescale: true,
-        do_resize: true,
-        image_mean: [0.5, 0.5, 0.5],
-        feature_extractor_type: "ImageFeatureExtractor",
-        image_std: [1, 1, 1],
-        resample: 2,
-        rescale_factor: 0.00392156862745098,
-        size: { width: 1024, height: 1024 },
-      },
-    });
-
-    const image = await RawImage.fromURL(imageUrl);
-    const inputs = await processor(image);
-    const { output } = await model(inputs);
-
-    const maskTensor = output[0].mul(255).to("uint8");
-    const maskImage = await RawImage.fromTensor(maskTensor).resize(
-      image.width,
-      image.height,
-    );
-    const maskData = maskImage.data;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = image.width;
-    canvas.height = image.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas not supported");
-
+/**
+ * Canvas-based background removal using flood-fill from image corners.
+ * Works reliably in all browsers without external dependencies.
+ * Best for product photos with uniform/light backgrounds.
+ */
+async function removeBackgroundCanvas(imageDataUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = reject;
-      img.src = imageUrl;
-    });
-    ctx.drawImage(img, 0, 0);
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas not supported"));
+        return;
+      }
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    for (let i = 0; i < maskData.length; i++) {
-      imageData.data[i * 4 + 3] = maskData[i];
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+
+      // Sample background color from corners and edges
+      const samplePixels = [
+        [0, 0],
+        [w - 1, 0],
+        [0, h - 1],
+        [w - 1, h - 1],
+        [Math.floor(w / 2), 0],
+        [0, Math.floor(h / 2)],
+        [w - 1, Math.floor(h / 2)],
+        [Math.floor(w / 2), h - 1],
+      ];
+      let bgR = 0;
+      let bgG = 0;
+      let bgB = 0;
+      for (const [x, y] of samplePixels) {
+        const idx = (y * w + x) * 4;
+        bgR += data[idx];
+        bgG += data[idx + 1];
+        bgB += data[idx + 2];
+      }
+      bgR = bgR / samplePixels.length;
+      bgG = bgG / samplePixels.length;
+      bgB = bgB / samplePixels.length;
+
+      // Flood fill from all corners with tolerance
+      const tolerance = 40;
+      const visited = new Uint8Array(w * h);
+      const stack: number[] = [];
+
+      // Push all corner/edge seed pixels
+      for (const [sx, sy] of [
+        [0, 0],
+        [w - 1, 0],
+        [0, h - 1],
+        [w - 1, h - 1],
+      ]) {
+        const seedIdx = sy * w + sx;
+        if (!visited[seedIdx]) {
+          visited[seedIdx] = 1;
+          stack.push(seedIdx);
+        }
+      }
+
+      while (stack.length > 0) {
+        const pixIdx = stack.pop()!;
+        const x = pixIdx % w;
+        const y = Math.floor(pixIdx / w);
+        const dataIdx = pixIdx * 4;
+
+        const r = data[dataIdx];
+        const g = data[dataIdx + 1];
+        const b = data[dataIdx + 2];
+        const diff = Math.sqrt(
+          (r - bgR) ** 2 + (g - bgG) ** 2 + (b - bgB) ** 2,
+        );
+
+        if (diff > tolerance) continue;
+
+        // Make transparent
+        data[dataIdx + 3] = 0;
+
+        const neighbors = [
+          x > 0 ? pixIdx - 1 : -1,
+          x < w - 1 ? pixIdx + 1 : -1,
+          y > 0 ? pixIdx - w : -1,
+          y < h - 1 ? pixIdx + w : -1,
+        ];
+        for (const n of neighbors) {
+          if (n >= 0 && !visited[n]) {
+            visited[n] = 1;
+            stack.push(n);
+          }
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    img.onerror = reject;
+    img.src = imageDataUrl;
+  });
+}
+
+/**
+ * AI-based background removal using HuggingFace RMBG-1.4 model.
+ * Falls back to canvas method on any failure.
+ */
+async function removeBackgroundAI(imageDataUrl: string): Promise<string> {
+  const { AutoModel, AutoProcessor, RawImage, env } = await import(
+    "@huggingface/transformers"
+  );
+
+  (env as Record<string, unknown>).allowLocalModels = false;
+  if ((env as Record<string, unknown>).backends) {
+    const backends = (env as Record<string, unknown>).backends as Record<
+      string,
+      unknown
+    >;
+    if (backends.onnx) {
+      (backends.onnx as Record<string, unknown>).wasm = {
+        ...((backends.onnx as Record<string, unknown>).wasm as object),
+        numThreads: 1,
+      };
     }
-    ctx.putImageData(imageData, 0, 0);
+  }
 
-    return canvas.toDataURL("image/png");
-  } catch (err) {
-    console.error("[BgRemoval] Failed:", err);
-    throw err;
+  const model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
+    config: { model_type: "custom" } as never,
+  });
+  const processor = await AutoProcessor.from_pretrained("briaai/RMBG-1.4", {
+    config: {
+      do_normalize: true,
+      do_pad: false,
+      do_rescale: true,
+      do_resize: true,
+      image_mean: [0.5, 0.5, 0.5],
+      feature_extractor_type: "ImageFeatureExtractor",
+      image_std: [1, 1, 1],
+      resample: 2,
+      rescale_factor: 0.00392156862745098,
+      size: { width: 1024, height: 1024 },
+    },
+  });
+
+  const image = await RawImage.fromURL(imageDataUrl);
+  const inputs = await processor(image);
+  const { output } = await model(inputs);
+
+  const maskTensor = output[0].mul(255).to("uint8");
+  const maskImage = await RawImage.fromTensor(maskTensor).resize(
+    image.width,
+    image.height,
+  );
+  const maskData = maskImage.data;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported");
+
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = reject;
+    img.src = imageDataUrl;
+  });
+  ctx.drawImage(img, 0, 0);
+
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  for (let i = 0; i < maskData.length; i++) {
+    imgData.data[i * 4 + 3] = maskData[i];
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  return canvas.toDataURL("image/png");
+}
+
+async function removeBackground(
+  imageUrl: string,
+  onStatus: (s: string) => void,
+): Promise<string> {
+  // Convert blob: URL to data URL first
+  const dataUrl =
+    imageUrl.startsWith("blob:") || imageUrl.startsWith("http")
+      ? await blobUrlToDataUrl(imageUrl)
+      : imageUrl;
+
+  // Try AI model first
+  try {
+    onStatus("Loading AI model (~40 MB on first use)...");
+    const result = await removeBackgroundAI(dataUrl);
+    return result;
+  } catch (aiErr) {
+    console.warn("[BgRemoval] AI model failed, using canvas method:", aiErr);
+    onStatus("AI model unavailable, using fast removal...");
+    return removeBackgroundCanvas(dataUrl);
   }
 }
 
@@ -169,9 +306,14 @@ async function compositeImageToAvif(
   bgIndex: number,
   shadow: ShadowType,
 ): Promise<{ blob: Blob; sizeKb: number; format: string }> {
+  // Convert to data URL if needed
+  const srcUrl =
+    imageUrl.startsWith("blob:") || imageUrl.startsWith("http")
+      ? await blobUrlToDataUrl(imageUrl)
+      : imageUrl;
+
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
     img.onload = () => {
       const canvas = document.createElement("canvas");
       canvas.width = img.naturalWidth;
@@ -227,25 +369,27 @@ async function compositeImageToAvif(
       ctx.shadowOffsetY = 0;
       ctx.shadowColor = "transparent";
 
-      const supportsAvif = canvas
-        .toDataURL("image/avif")
-        .startsWith("data:image/avif");
-
-      const chosenFormat = supportsAvif ? "image/avif" : "image/webp";
-      const chosenExt = supportsAvif ? "avif" : "webp";
-
-      const tryEncode = (format: string, quality: number) => {
+      // Try AVIF first; fall back to WebP if unsupported
+      const tryEncode = (format: string, ext: string, quality: number) => {
         canvas.toBlob(
           (blob) => {
             if (!blob) {
-              reject(new Error("Failed to encode"));
+              if (format === "image/avif") {
+                tryEncode("image/webp", "webp", 0.8);
+              } else {
+                reject(new Error("Failed to encode"));
+              }
+              return;
+            }
+            if (format === "image/avif" && blob.type !== "image/avif") {
+              tryEncode("image/webp", "webp", 0.8);
               return;
             }
             const sizeKb = blob.size / 1024;
             if (sizeKb > 250 && quality > 0.3) {
-              tryEncode(format, Math.max(0.3, quality - 0.15));
+              tryEncode(format, ext, Math.max(0.3, quality - 0.15));
             } else {
-              resolve({ blob, sizeKb: Math.round(sizeKb), format: chosenExt });
+              resolve({ blob, sizeKb: Math.round(sizeKb), format: ext });
             }
           },
           format,
@@ -253,14 +397,10 @@ async function compositeImageToAvif(
         );
       };
 
-      if (supportsAvif) {
-        tryEncode(chosenFormat, 0.7);
-      } else {
-        tryEncode(chosenFormat, 0.8);
-      }
+      tryEncode("image/avif", "avif", 0.7);
     };
     img.onerror = reject;
-    img.src = imageUrl;
+    img.src = srcUrl;
   });
 }
 
@@ -279,9 +419,7 @@ export function StepImage({
   actor = null,
 }: StepImageProps) {
   const [phase, setPhase] = useState<Phase>("capture");
-  const [capturedObjectUrl, setCapturedObjectUrl] = useState<string | null>(
-    null,
-  );
+  const [capturedDataUrl, setCapturedDataUrl] = useState<string | null>(null);
   const [processedUrl, setProcessedUrl] = useState<string | null>(null);
   const [bgRemovedUrl, setBgRemovedUrl] = useState<string | null>(null);
   const [bgRemovalStatus, setBgRemovalStatus] = useState<string>("");
@@ -369,16 +507,22 @@ export function StepImage({
   };
 
   const processFile = useCallback(async (file: File) => {
-    const objectUrl = URL.createObjectURL(file);
-    setCapturedObjectUrl(objectUrl);
-    setProcessedUrl(objectUrl);
+    // Convert to data URL immediately so we have a stable, valid URL
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    setCapturedDataUrl(dataUrl);
+    setProcessedUrl(dataUrl);
     setBgRemovedUrl(null);
     setPhase("removing");
-    setBgRemovalStatus("Loading AI model (~40 MB on first use)...");
+    setBgRemovalStatus("Preparing...");
 
     try {
-      setBgRemovalStatus("Removing background...");
-      const removedUrl = await removeBackground(objectUrl);
+      const removedUrl = await removeBackground(dataUrl, setBgRemovalStatus);
       setBgRemovedUrl(removedUrl);
       setPhase("bgcompare");
     } catch {
@@ -403,7 +547,7 @@ export function StepImage({
     setPhase("uploading");
     setUploadProgress(0);
     try {
-      const { blob, sizeKb, format } = await compositeImageToAvif(
+      const { blob, sizeKb } = await compositeImageToAvif(
         processedUrl,
         selectedBg,
         selectedShadow,
@@ -420,7 +564,9 @@ export function StepImage({
         ).uploadImageToCloudflare(bytes);
         const data = JSON.parse(jsonResponse);
         if (data.success && data.result?.variants?.length > 0) {
-          url = `${data.result.variants[0]}?filename=product.avif`;
+          // Use Cloudflare URL directly — it serves the image from CDN
+          // The variant URL is a valid https:// link openable in any browser
+          url = data.result.variants[0] as string;
           setUsedCloudflare(true);
         } else {
           throw new Error(
@@ -428,12 +574,12 @@ export function StepImage({
           );
         }
       } else {
-        // Fallback: use ExternalBlob
+        // Fallback: use ExternalBlob (Caffeine blob storage)
         const externalBlob = ExternalBlob.fromBytes(bytes).withUploadProgress(
           (pct) => setUploadProgress(pct),
         );
-        const rawUrl = externalBlob.getDirectURL();
-        url = `${rawUrl}?filename=product.${format}`;
+        // getDirectURL() uploads to Caffeine storage and returns a valid https:// URL
+        url = externalBlob.getDirectURL();
         setUsedCloudflare(false);
       }
 
@@ -449,10 +595,7 @@ export function StepImage({
   };
 
   const handleAddAnother = () => {
-    if (capturedObjectUrl) URL.revokeObjectURL(capturedObjectUrl);
-    if (processedUrl && processedUrl !== capturedObjectUrl)
-      URL.revokeObjectURL(processedUrl);
-    setCapturedObjectUrl(null);
+    setCapturedDataUrl(null);
     setProcessedUrl(null);
     setBgRemovedUrl(null);
     setSelectedBg(0);
@@ -668,7 +811,7 @@ export function StepImage({
           </motion.div>
         )}
 
-        {phase === "bgcompare" && capturedObjectUrl && bgRemovedUrl && (
+        {phase === "bgcompare" && capturedDataUrl && bgRemovedUrl && (
           <motion.div
             key="bgcompare"
             initial={{ opacity: 0, y: 20 }}
@@ -710,7 +853,7 @@ export function StepImage({
                   style={{ minHeight: 140 }}
                 >
                   <img
-                    src={capturedObjectUrl}
+                    src={capturedDataUrl}
                     alt="Original"
                     className="max-h-36 w-auto object-contain"
                   />
