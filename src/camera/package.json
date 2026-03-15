@@ -1,0 +1,8 @@
+{
+  "name": "camera",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./useCamera": "./useCamera.ts"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "blob-storage",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./ExternalBlob": "./ExternalBlob.ts"
+  }
+}
