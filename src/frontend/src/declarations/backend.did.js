@@ -86,7 +86,9 @@ export const idlService = IDL.Service({
       ['query'],
     ),
   'getEntry' : IDL.Func([IDL.Nat], [ProductEntry], ['query']),
+  'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
   'searchImages' : IDL.Func([IDL.Text], [IDL.Text], []),
+  'setCloudflareConfig' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'transform' : IDL.Func(
       [TransformationInput],
       [TransformationOutput],
@@ -97,6 +99,7 @@ export const idlService = IDL.Service({
       [ProductEntry],
       [],
     ),
+  'uploadImageToCloudflare' : IDL.Func([IDL.Vec(IDL.Nat8)], [IDL.Text], []),
 });
 
 export const idlInitArgs = [];
@@ -177,7 +180,9 @@ export const idlFactory = ({ IDL }) => {
         ['query'],
       ),
     'getEntry' : IDL.Func([IDL.Nat], [ProductEntry], ['query']),
+    'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
     'searchImages' : IDL.Func([IDL.Text], [IDL.Text], []),
+    'setCloudflareConfig' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'transform' : IDL.Func(
         [TransformationInput],
         [TransformationOutput],
@@ -188,6 +193,7 @@ export const idlFactory = ({ IDL }) => {
         [ProductEntry],
         [],
       ),
+    'uploadImageToCloudflare' : IDL.Func([IDL.Vec(IDL.Nat8)], [IDL.Text], []),
   });
 };
 

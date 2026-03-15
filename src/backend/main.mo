@@ -30,6 +30,59 @@ actor {
   var nextId = 0;
   let productEntries = Map.empty<Nat, ProductEntry>();
 
+  // Cloudflare Images configuration
+  var cloudflareAccountId : Text = "";
+  var cloudflareApiToken : Text = "";
+
+  func textToBytes(t : Text) : [Nat8] {
+    t.encodeUtf8().toArray();
+  };
+
+  func concatBytes(a : [Nat8], b : [Nat8]) : [Nat8] {
+    Array.tabulate<Nat8>(a.size() + b.size(), func(i) {
+      if (i < a.size()) a[i] else b[i - a.size()];
+    });
+  };
+
+  public shared ({ caller }) func setCloudflareConfig(accountId : Text, apiToken : Text) : async () {
+    cloudflareAccountId := accountId;
+    cloudflareApiToken := apiToken;
+  };
+
+  public query ({ caller }) func getCloudflareConfigured() : async Bool {
+    cloudflareAccountId != "" and cloudflareApiToken != "";
+  };
+
+  public shared ({ caller }) func uploadImageToCloudflare(imageData : [Nat8]) : async Text {
+    if (cloudflareAccountId == "" or cloudflareApiToken == "") {
+      Runtime.trap("Cloudflare not configured. Please set your Account ID and API Token in Settings.");
+    };
+
+    let boundary = "FormBoundaryProductSnap";
+
+    let headerPart = textToBytes(
+      "--" # boundary # "\r\n" #
+      "Content-Disposition: form-data; name=\"file\"; filename=\"product.avif\"\r\n" #
+      "Content-Type: image/avif\r\n\r\n"
+    );
+
+    let footerPart = textToBytes("\r\n--" # boundary # "--\r\n");
+
+    let bodyBytes = concatBytes(concatBytes(headerPart, imageData), footerPart);
+
+    let url = "https://api.cloudflare.com/client/v4/accounts/" # cloudflareAccountId # "/images/v1";
+
+    await OutCall.httpPostBinaryRequest(
+      url,
+      [
+        { name = "Authorization"; value = "Bearer " # cloudflareApiToken },
+        { name = "Content-Type"; value = "multipart/form-data; boundary=" # boundary },
+      ],
+      bodyBytes,
+      transform,
+    );
+  };
+
   public shared ({ caller }) func createEntry(sku : Text, productName : Text, capturedImageUrls : Text, searchImageUrls : Text) : async ProductEntry {
     let id = nextId;
     nextId += 1;

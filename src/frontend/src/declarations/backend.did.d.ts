@@ -65,12 +65,15 @@ export interface _SERVICE {
   'getAllEntries' : ActorMethod<[], Array<ProductEntry>>,
   'getEntriesByDateRange' : ActorMethod<[bigint, bigint], Array<ProductEntry>>,
   'getEntry' : ActorMethod<[bigint], ProductEntry>,
+  'getCloudflareConfigured' : ActorMethod<[], boolean>,
   'searchImages' : ActorMethod<[string], string>,
+  'setCloudflareConfig' : ActorMethod<[string, string], undefined>,
   'transform' : ActorMethod<[TransformationInput], TransformationOutput>,
   'updateEntry' : ActorMethod<
     [bigint, string, string, string, string],
     ProductEntry
   >,
+  'uploadImageToCloudflare' : ActorMethod<[Uint8Array], string>,
 }
 export declare const idlService: IDL.ServiceClass;
 export declare const idlInitArgs: IDL.Type[];

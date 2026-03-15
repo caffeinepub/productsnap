@@ -11,7 +11,6 @@ import {
   X,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import { createWorker } from "tesseract.js";
 
 interface StepNameProps {
   value: string;
@@ -41,13 +40,11 @@ function isMeaningfulText(text: string): boolean {
   const t = text.trim();
   if (t.length <= 3) return false;
   if (!/[a-zA-Z]/.test(t)) return false;
-  // Require at least one word of 3+ consecutive letters (not random chars)
   const words = t.split(/\s+/).filter((w) => /^[a-zA-Z]{3,}$/.test(w));
   return words.length >= 1;
 }
 
 async function queryBLIPWithRetry(file: File, maxRetries = 3): Promise<string> {
-  // Convert to blob to ensure proper binary transfer
   const arrayBuffer = await file.arrayBuffer();
   const blob = new Blob([arrayBuffer], { type: file.type || "image/jpeg" });
 
@@ -62,7 +59,6 @@ async function queryBLIPWithRetry(file: File, maxRetries = 3): Promise<string> {
     );
 
     if (response.status === 503) {
-      // Model is loading, wait and retry
       await new Promise((r) => setTimeout(r, 8000));
       continue;
     }
@@ -112,37 +108,9 @@ export function StepName({ value, onChange, sku }: StepNameProps) {
   const processFile = async (file: File) => {
     setScanState("scanning");
     setScanResult("");
-    setScanStatus("Reading text from image...");
+    setScanStatus("Identifying product...");
 
     try {
-      // Step 1: OCR with confidence threshold
-      const worker = await createWorker("eng");
-      const { data } = await worker.recognize(file);
-      await worker.terminate();
-
-      const ocrText = data.text?.trim() ?? "";
-      const ocrConfidence: number =
-        (data as { confidence?: number }).confidence ?? 0;
-
-      // Only trust OCR if confidence is high enough (>= 60) AND text is meaningful
-      if (ocrConfidence >= 60 && isMeaningfulText(ocrText)) {
-        const lines = ocrText
-          .split("\n")
-          .filter((l) => /^[a-zA-Z\s]{3,}$/.test(l.trim()));
-        if (lines.length > 0) {
-          const bestLine = lines.sort((a, b) => b.length - a.length)[0];
-          const named = toTitleCase(bestLine.slice(0, 80));
-          if (isMeaningfulText(named)) {
-            setScanResult(named);
-            setScanState("success");
-            return;
-          }
-        }
-      }
-
-      // Step 2: AI image recognition via BLIP
-      setScanStatus("Identifying product...");
-
       slowTimerRef.current = setTimeout(() => {
         setScanStatus("Analyzing image (first use may take ~15s)...");
       }, 3000);
@@ -167,7 +135,7 @@ export function StepName({ value, onChange, sku }: StepNameProps) {
       }
       setScanState("error");
       setScanStatus(
-        "Could not detect text or recognize image. Please type the name manually.",
+        "Could not recognize image. Please type the name manually.",
       );
     }
   };
@@ -240,7 +208,9 @@ export function StepName({ value, onChange, sku }: StepNameProps) {
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             placeholder="e.g. Wireless Bluetooth Speaker"
-            className={`pl-12 h-14 text-lg bg-card border-border transition-all duration-200 ${focused ? "border-primary" : ""}`}
+            className={`pl-12 h-14 text-lg bg-card border-border transition-all duration-200 ${
+              focused ? "border-primary" : ""
+            }`}
             autoComplete="off"
             inputMode="text"
           />
@@ -264,7 +234,6 @@ export function StepName({ value, onChange, sku }: StepNameProps) {
           Scan Image for Name
         </Button>
 
-        {/* Camera file input (directly invokes camera) */}
         <input
           ref={cameraInputRef}
           type="file"
@@ -274,7 +243,6 @@ export function StepName({ value, onChange, sku }: StepNameProps) {
           onChange={handleCameraFileSelected}
         />
 
-        {/* Gallery file input (opens photo library) */}
         <input
           ref={galleryInputRef}
           data-ocid="name.upload_button"

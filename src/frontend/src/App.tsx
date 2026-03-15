@@ -1,14 +1,27 @@
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
-import { ChevronLeft, ChevronRight, FileDown, SkipForward } from "lucide-react";
-import { useCallback, useState } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileDown,
+  Settings,
+  SkipForward,
+} from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import type { backendInterface } from "./backend";
+import { CloudflareSettingsModal } from "./components/CloudflareSettingsModal";
 import { CsvExportModal } from "./components/CsvExportModal";
 import { StepIndicator } from "./components/StepIndicator";
+import { useActor } from "./hooks/useActor";
 import { StepImage } from "./steps/StepImage";
 import { StepName } from "./steps/StepName";
 import { StepSKU } from "./steps/StepSKU";
 import { StepSearch } from "./steps/StepSearch";
 import { StepSummary } from "./steps/StepSummary";
+
+interface CloudflareActor extends backendInterface {
+  getCloudflareConfigured(): Promise<boolean>;
+}
 
 const STEP_LABELS = ["SKU", "Name", "Image", "Search", "Review"];
 const TOTAL_STEPS = 5;
@@ -31,6 +44,26 @@ export default function App() {
   const [step, setStep] = useState(0);
   const [state, setState] = useState<WizardState>(DEFAULT_STATE);
   const [csvOpen, setCsvOpen] = useState(false);
+  const [cfOpen, setCfOpen] = useState(false);
+  const [cloudflareConfigured, setCloudflareConfigured] = useState(false);
+
+  const { actor, isFetching } = useActor();
+
+  const checkCloudflareConfig = useCallback(async () => {
+    if (!actor || isFetching) return;
+    try {
+      const configured = await (
+        actor as CloudflareActor
+      ).getCloudflareConfigured();
+      setCloudflareConfigured(configured);
+    } catch {
+      setCloudflareConfigured(false);
+    }
+  }, [actor, isFetching]);
+
+  useEffect(() => {
+    checkCloudflareConfig();
+  }, [checkCloudflareConfig]);
 
   const goNext = useCallback(() => {
     if (step < TOTAL_STEPS - 1) setStep((s) => s + 1);
@@ -69,15 +102,30 @@ export default function App() {
           </div>
           <span className="text-sm font-bold text-foreground">ProductSnap</span>
         </div>
-        <button
-          type="button"
-          data-ocid="csv.open_modal_button"
-          onClick={() => setCsvOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary hover:bg-muted transition-colors text-xs font-semibold text-muted-foreground"
-        >
-          <FileDown className="w-3.5 h-3.5" />
-          Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-ocid="settings.open_modal_button"
+            onClick={() => setCfOpen(true)}
+            title="Cloudflare Images settings"
+            className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors ${
+              cloudflareConfigured
+                ? "bg-orange-100 text-orange-600 hover:bg-orange-200"
+                : "bg-secondary text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            data-ocid="csv.open_modal_button"
+            onClick={() => setCsvOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary hover:bg-muted transition-colors text-xs font-semibold text-muted-foreground"
+          >
+            <FileDown className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
+        </div>
       </header>
 
       {/* Step Indicator */}
@@ -111,6 +159,9 @@ export default function App() {
             onUpdate={(urls) =>
               setState((s) => ({ ...s, capturedImageUrls: urls }))
             }
+            cloudflareConfigured={cloudflareConfigured}
+            actor={actor}
+            onCloudflareConfigChange={checkCloudflareConfig}
           />
         )}
         {step === 3 && (
@@ -197,6 +248,13 @@ export default function App() {
       )}
 
       <CsvExportModal open={csvOpen} onOpenChange={setCsvOpen} />
+      <CloudflareSettingsModal
+        open={cfOpen}
+        onOpenChange={setCfOpen}
+        actor={actor}
+        configured={cloudflareConfigured}
+        onConfigChange={checkCloudflareConfig}
+      />
       <Toaster position="top-center" richColors />
 
       <footer className="flex-shrink-0 py-2 text-center">

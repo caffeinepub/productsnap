@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
+import { useActor } from "../hooks/useActor";
 import { useCreateEntry } from "../hooks/useQueries";
 
 interface StepSummaryProps {
@@ -41,8 +42,15 @@ export function StepSummary({
   onStartNew,
 }: StepSummaryProps) {
   const createEntry = useCreateEntry();
+  const { actor, isFetching: isActorLoading } = useActor();
 
   const handleSave = async () => {
+    if (!actor) {
+      toast.error(
+        "Still connecting to backend. Please wait a moment and try again.",
+      );
+      return;
+    }
     try {
       await createEntry.mutateAsync({
         sku,
@@ -52,7 +60,8 @@ export function StepSummary({
       });
       toast.success("Product entry saved!");
       onSaved();
-    } catch {
+    } catch (err) {
+      console.error("[Save] Failed:", err);
       toast.error("Failed to save. Please try again.");
     }
   };
@@ -117,6 +126,8 @@ export function StepSummary({
     );
   }
 
+  const isSaveDisabled = createEntry.isPending || isActorLoading || !actor;
+
   return (
     <div className="flex flex-col h-full px-4 gap-4 overflow-y-auto pb-2">
       <motion.div
@@ -151,7 +162,9 @@ export function StepSummary({
               }`}
             >
               <field.icon
-                className={`w-5 h-5 ${field.hasValue ? "text-primary" : "text-muted-foreground"}`}
+                className={`w-5 h-5 ${
+                  field.hasValue ? "text-primary" : "text-muted-foreground"
+                }`}
               />
             </div>
             <div className="flex-1 min-w-0">
@@ -191,15 +204,30 @@ export function StepSummary({
             over.
           </p>
         )}
+
+        {isActorLoading && (
+          <p
+            data-ocid="summary.loading_state"
+            className="text-xs text-muted-foreground text-center flex items-center justify-center gap-1.5"
+          >
+            <Loader2 className="w-3 h-3 animate-spin" />
+            Connecting to backend...
+          </p>
+        )}
+
         <Button
           data-ocid="summary.primary_button"
           className="w-full h-12 bg-primary text-primary-foreground font-600"
           onClick={handleSave}
-          disabled={createEntry.isPending}
+          disabled={isSaveDisabled}
         >
           {createEntry.isPending ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...
+            </>
+          ) : isActorLoading || !actor ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Connecting...
             </>
           ) : (
             "Save Entry"

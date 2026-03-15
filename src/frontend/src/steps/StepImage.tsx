@@ -1,14 +1,16 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Camera,
   Check,
+  Cloud,
+  HardDrive,
   ImageIcon,
   Layers,
   Loader2,
   Plus,
   Sun,
   Upload,
-  Wand2,
   ZoomIn,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -16,16 +18,14 @@ import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ExternalBlob } from "../../blob-storage/ExternalBlob";
 import { useCamera } from "../../camera/useCamera";
+import type { backendInterface } from "../backend";
 
-type Phase =
-  | "capture"
-  | "processing"
-  | "confirm-removal"
-  | "background"
-  | "shadow"
-  | "uploading"
-  | "done";
+type Phase = "capture" | "background" | "shadow" | "uploading" | "done";
 type ShadowType = "none" | "soft" | "hard" | "bottom";
+
+interface CloudflareActor extends backendInterface {
+  uploadImageToCloudflare(imageData: Uint8Array): Promise<string>;
+}
 
 const BACKGROUNDS = [
   { name: "White Studio", color: "#ffffff", gradient: null },
@@ -177,9 +177,17 @@ async function compositeImageToAvif(
 interface StepImageProps {
   capturedImageUrls: string[];
   onUpdate: (urls: string[]) => void;
+  cloudflareConfigured?: boolean;
+  actor?: backendInterface | null;
+  onCloudflareConfigChange?: () => void;
 }
 
-export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
+export function StepImage({
+  capturedImageUrls,
+  onUpdate,
+  cloudflareConfigured = false,
+  actor = null,
+}: StepImageProps) {
   const [phase, setPhase] = useState<Phase>("capture");
   const [capturedObjectUrl, setCapturedObjectUrl] = useState<string | null>(
     null,
@@ -194,6 +202,7 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
   const [nativeZoomSupported, setNativeZoomSupported] = useState<
     boolean | null
   >(null);
+  const [usedCloudflare, setUsedCloudflare] = useState<boolean | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
@@ -215,7 +224,6 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setShowCamera(true);
     setZoomLevel(1);
     await startCamera();
-    // After camera starts, check native zoom support
     setTimeout(() => {
       if (videoRef.current) {
         const stream = (videoRef.current as HTMLVideoElement)
@@ -272,74 +280,8 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     const objectUrl = URL.createObjectURL(file);
     setCapturedObjectUrl(objectUrl);
     setProcessedUrl(objectUrl);
-    setPhase("processing");
-    try {
-      // Use @huggingface/transformers in single-thread mode — no SharedArrayBuffer required
-      const { env, AutoModel, AutoProcessor, RawImage } = await import(
-        "@huggingface/transformers"
-      );
-
-      // Single-thread mode — no SharedArrayBuffer required
-      (env.backends as any).onnx.wasm.numThreads = 1;
-      env.allowLocalModels = false;
-      env.useBrowserCache = true;
-
-      const MODEL_ID = "briaai/RMBG-1.4";
-      const [model, processor] = await Promise.all([
-        AutoModel.from_pretrained(MODEL_ID, {
-          config: { model_type: "custom" } as any,
-          dtype: "fp32" as any,
-        }),
-        AutoProcessor.from_pretrained(MODEL_ID, {
-          config: {
-            do_normalize: true,
-            do_pad: false,
-            do_rescale: true,
-            do_resize: true,
-            image_mean: [0.5, 0.5, 0.5],
-            feature_extractor_type: "ImageFeatureExtractor",
-            image_std: [1, 1, 1],
-            resample: 2,
-            rescale_factor: 0.00392156862745098,
-            size: { width: 1024, height: 1024 },
-          },
-        }),
-      ]);
-
-      const image = await RawImage.fromBlob(file);
-      const { pixel_values } = await (processor as any)(image);
-      const { output } = await (model as any)({ input: pixel_values });
-
-      const mask = await (
-        RawImage.fromTensor((output[0] as any).mul(255).to("uint8")) as any
-      ).resize(image.width, image.height);
-
-      const canvas = document.createElement("canvas");
-      canvas.width = image.width;
-      canvas.height = image.height;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(await createImageBitmap(file), 0, 0);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      for (let i = 0; i < mask.data.length; i++) {
-        imgData.data[4 * i + 3] = mask.data[i];
-      }
-      ctx.putImageData(imgData, 0, 0);
-
-      const resultBlob: Blob = await new Promise((resolve, reject) => {
-        canvas.toBlob(
-          (b) => (b ? resolve(b) : reject(new Error("Blob failed"))),
-          "image/png",
-        );
-      });
-
-      const resultUrl = URL.createObjectURL(resultBlob);
-      setProcessedUrl(resultUrl);
-      setPhase("confirm-removal");
-    } catch (err) {
-      console.error("[Background Removal] Failed:", err);
-      toast.info("Background removal unavailable — using original image.");
-      setPhase("background");
-    }
+    // Skip background removal processing — go straight to background selection
+    setPhase("background");
   }, []);
 
   const handleConvertAndUpload = async () => {
@@ -354,14 +296,39 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
       );
       setLastSizeKb(sizeKb);
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      const externalBlob = ExternalBlob.fromBytes(bytes).withUploadProgress(
-        (pct) => setUploadProgress(pct),
-      );
-      const url = externalBlob.getDirectURL();
+
+      let url: string;
+
+      if (cloudflareConfigured && actor) {
+        // Upload via Cloudflare Images
+        const jsonResponse = await (
+          actor as CloudflareActor
+        ).uploadImageToCloudflare(bytes);
+        const data = JSON.parse(jsonResponse);
+        if (data.success && data.result?.variants?.length > 0) {
+          url = data.result.variants[0] as string;
+          setUsedCloudflare(true);
+        } else {
+          throw new Error(
+            (data.errors?.[0]?.message as string) || "Cloudflare upload failed",
+          );
+        }
+      } else {
+        // Fallback: use ExternalBlob
+        const externalBlob = ExternalBlob.fromBytes(bytes).withUploadProgress(
+          (pct) => setUploadProgress(pct),
+        );
+        url = externalBlob.getDirectURL();
+        setUsedCloudflare(false);
+      }
+
       onUpdate([...capturedImageUrls, url]);
       setPhase("done");
-    } catch {
-      toast.error("Upload failed. Please try again.");
+    } catch (err) {
+      console.error("[Upload] Failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Upload failed. Please try again.",
+      );
       setPhase("shadow");
     }
   };
@@ -376,10 +343,10 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
     setSelectedShadow("none");
     setLastSizeKb(null);
     setUploadProgress(0);
+    setUsedCloudflare(null);
     setPhase("capture");
   };
 
-  // CSS zoom scale (used when native zoom not supported)
   const cssZoomScale = nativeZoomSupported === false ? zoomLevel : 1;
 
   return (
@@ -393,13 +360,24 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
         <h1 className="text-2xl font-display font-700 tracking-tight">
           Capture Image
         </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          {capturedImageUrls.length > 0
-            ? `${capturedImageUrls.length} image${
-                capturedImageUrls.length > 1 ? "s" : ""
-              } added`
-            : "Take or upload a product photo"}
-        </p>
+        <div className="flex items-center justify-center gap-2 mt-1">
+          <p className="text-sm text-muted-foreground">
+            {capturedImageUrls.length > 0
+              ? `${capturedImageUrls.length} image${
+                  capturedImageUrls.length > 1 ? "s" : ""
+                } added`
+              : "Take or upload a product photo"}
+          </p>
+          {cloudflareConfigured && (
+            <Badge
+              variant="outline"
+              className="text-orange-600 border-orange-300 bg-orange-50 gap-1 text-[10px] py-0"
+            >
+              <Cloud className="w-2.5 h-2.5" />
+              Cloudflare
+            </Badge>
+          )}
+        </div>
       </motion.div>
 
       <AnimatePresence mode="wait">
@@ -444,7 +422,6 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                   )}
                 </div>
 
-                {/* Zoom slider */}
                 <div className="flex items-center gap-3 px-1">
                   <ZoomIn className="w-4 h-4 text-muted-foreground flex-shrink-0" />
                   <input
@@ -549,127 +526,6 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                 </p>
               </div>
             )}
-          </motion.div>
-        )}
-
-        {phase === "processing" && (
-          <motion.div
-            key="processing"
-            data-ocid="image.loading_state"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex flex-col items-center justify-center gap-5 py-10"
-          >
-            <div className="relative">
-              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
-                <Wand2 className="w-8 h-8 text-primary" />
-              </div>
-              <Loader2 className="w-6 h-6 text-primary animate-spin absolute -bottom-1 -right-1" />
-            </div>
-            <div className="text-center">
-              <p className="font-display font-700 text-lg">
-                Removing Background
-              </p>
-              <p className="text-sm text-muted-foreground mt-1">
-                AI is isolating your product...
-              </p>
-              <p className="text-xs text-muted-foreground mt-1 opacity-70">
-                First use downloads AI models (~40 MB)
-              </p>
-            </div>
-            {capturedObjectUrl && (
-              <img
-                src={capturedObjectUrl}
-                alt="Original"
-                className="w-32 h-32 object-contain rounded-xl border border-border opacity-50"
-              />
-            )}
-          </motion.div>
-        )}
-
-        {phase === "confirm-removal" && (
-          <motion.div
-            key="confirm-removal"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="flex flex-col gap-5"
-          >
-            <div className="text-center">
-              <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary text-xs font-600 px-3 py-1 rounded-full mb-2">
-                <Wand2 className="w-3 h-3" />
-                Background Removed
-              </div>
-              <p className="text-sm text-muted-foreground">
-                Choose which version to use
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-2">
-                <div
-                  className="rounded-xl overflow-hidden border-2 border-border bg-card flex items-center justify-center"
-                  style={{ aspectRatio: "1", minHeight: 130 }}
-                >
-                  {capturedObjectUrl && (
-                    <img
-                      src={capturedObjectUrl}
-                      alt="Original"
-                      className="w-full h-full object-contain"
-                    />
-                  )}
-                </div>
-                <p className="text-xs font-600 text-center text-muted-foreground">
-                  Original
-                </p>
-              </div>
-              <div className="flex flex-col gap-2">
-                <div
-                  className="rounded-xl overflow-hidden border-2 border-primary/60 flex items-center justify-center"
-                  style={{
-                    aspectRatio: "1",
-                    minHeight: 130,
-                    backgroundImage:
-                      "repeating-conic-gradient(#e5e7eb 0% 25%, #fff 0% 50%)",
-                    backgroundSize: "16px 16px",
-                  }}
-                >
-                  {processedUrl && (
-                    <img
-                      src={processedUrl}
-                      alt="Background Removed"
-                      className="w-full h-full object-contain"
-                    />
-                  )}
-                </div>
-                <p className="text-xs font-600 text-center text-primary">
-                  Removed
-                </p>
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <Button
-                data-ocid="image.secondary_button"
-                variant="outline"
-                className="flex-1 h-12"
-                onClick={() => {
-                  if (capturedObjectUrl) setProcessedUrl(capturedObjectUrl);
-                  setPhase("shadow");
-                }}
-              >
-                Skip / Keep Original
-              </Button>
-              <Button
-                data-ocid="image.primary_button"
-                className="flex-1 h-12 bg-primary text-primary-foreground font-600"
-                onClick={() => setPhase("background")}
-              >
-                <Wand2 className="w-4 h-4 mr-2" />
-                Use Removed
-              </Button>
-            </div>
           </motion.div>
         )}
 
@@ -795,8 +651,13 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
               className="w-full h-12 bg-primary text-primary-foreground font-600"
               onClick={handleConvertAndUpload}
             >
-              <Layers className="w-4 h-4 mr-2" />
-              Convert &amp; Upload
+              {cloudflareConfigured ? (
+                <Cloud className="w-4 h-4 mr-2" />
+              ) : (
+                <Layers className="w-4 h-4 mr-2" />
+              )}
+              Convert &amp;{" "}
+              {cloudflareConfigured ? "Upload to Cloudflare" : "Upload"}
             </Button>
           </motion.div>
         )}
@@ -833,17 +694,23 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                   stroke="oklch(0.78 0.18 72)"
                   strokeWidth="4"
                   strokeLinecap="round"
-                  strokeDasharray={`${(uploadProgress / 100) * 226} 226`}
+                  strokeDasharray={`${
+                    cloudflareConfigured ? 113 : (uploadProgress / 100) * 226
+                  } 226`}
                   style={{ transition: "stroke-dasharray 0.3s ease" }}
                 />
               </svg>
             </div>
             <div className="text-center">
               <p className="font-display font-700 text-lg">
-                Converting &amp; Uploading
+                {cloudflareConfigured
+                  ? "Uploading to Cloudflare"
+                  : "Converting & Uploading"}
               </p>
               <p className="text-sm text-muted-foreground mt-1">
-                {uploadProgress}% complete
+                {cloudflareConfigured
+                  ? "Sending image to Cloudflare CDN..."
+                  : `${uploadProgress}% complete`}
               </p>
             </div>
           </motion.div>
@@ -864,19 +731,38 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
               </div>
               <div className="text-center">
                 <p className="font-display font-700 text-lg">Image Added!</p>
-                {lastSizeKb !== null && (
-                  <p className="text-sm text-muted-foreground mt-1">
-                    File size:{" "}
-                    <span className="text-primary font-600">
-                      {lastSizeKb} KB
-                    </span>
-                    {lastSizeKb <= 100
-                      ? " ✓ Optimal"
-                      : lastSizeKb <= 250
-                        ? " ✓ Good"
-                        : " ⚠ Large"}
-                  </p>
-                )}
+                <div className="flex items-center justify-center gap-2 mt-1">
+                  {lastSizeKb !== null && (
+                    <p className="text-sm text-muted-foreground">
+                      File size:{" "}
+                      <span className="text-primary font-600">
+                        {lastSizeKb} KB
+                      </span>
+                      {lastSizeKb <= 100
+                        ? " ✓ Optimal"
+                        : lastSizeKb <= 250
+                          ? " ✓ Good"
+                          : " ⚠ Large"}
+                    </p>
+                  )}
+                  {usedCloudflare !== null && (
+                    <Badge
+                      variant="outline"
+                      className={`gap-1 text-[10px] py-0 ${
+                        usedCloudflare
+                          ? "text-orange-600 border-orange-300 bg-orange-50"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {usedCloudflare ? (
+                        <Cloud className="w-2.5 h-2.5" />
+                      ) : (
+                        <HardDrive className="w-2.5 h-2.5" />
+                      )}
+                      {usedCloudflare ? "Cloudflare" : "Local storage"}
+                    </Badge>
+                  )}
+                </div>
               </div>
             </div>
             <div className="rounded-xl bg-card border border-border p-4">

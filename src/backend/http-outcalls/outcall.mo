@@ -75,4 +75,28 @@ module {
       case (?decodedResponse) { decodedResponse };
     };
   };
+
+  public func httpPostBinaryRequest(url : Text, extraHeaders : [Header], body : [Nat8], transform : Transform) : async Text {
+    let headers = extraHeaders.concat([
+      { name = "User-Agent"; value = "caffeine.ai" },
+      { name = "Idempotency-Key"; value = "Time-" # Time.now().toText() },
+    ]);
+    let httpRequest : IC.http_request_args = {
+      url;
+      max_response_bytes = null;
+      headers;
+      body = ?Blob.fromArray(body);
+      method = #post;
+      transform = ?{
+        function = transform;
+        context = Blob.fromArray([]);
+      };
+      is_replicated = ?false;
+    };
+    let httpResponse = await (with cycles = httpRequestCycles) IC.http_request(httpRequest);
+    switch (httpResponse.body.decodeUtf8()) {
+      case (null) { Runtime.trap("empty HTTP response") };
+      case (?decodedResponse) { decodedResponse };
+    };
+  };
 };

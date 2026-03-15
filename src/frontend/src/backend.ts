@@ -341,6 +341,48 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async setCloudflareConfig(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await (this.actor as any).setCloudflareConfig(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await (this.actor as any).setCloudflareConfig(arg0, arg1);
+            return result;
+        }
+    }
+    async getCloudflareConfigured(): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await (this.actor as any).getCloudflareConfigured();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await (this.actor as any).getCloudflareConfigured();
+            return result;
+        }
+    }
+    async uploadImageToCloudflare(arg0: Uint8Array): Promise<string> {
+        if (this.processError) {
+            try {
+                const result = await (this.actor as any).uploadImageToCloudflare(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await (this.actor as any).uploadImageToCloudflare(arg0);
+            return result;
+        }
+    }
 }
 function from_candid__CaffeineStorageRefillResult_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: __CaffeineStorageRefillResult): _CaffeineStorageRefillResult {
     return from_candid_record_n5(_uploadFile, _downloadFile, value);

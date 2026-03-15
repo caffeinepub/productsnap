@@ -42,4 +42,7 @@ export interface backendInterface {
     searchImages(searchQuery: string): Promise<string>;
     transform(input: TransformationInput): Promise<TransformationOutput>;
     updateEntry(id: bigint, sku: string, productName: string, capturedImageUrls: string, searchImageUrls: string): Promise<ProductEntry>;
+    setCloudflareConfig(accountId: string, apiToken: string): Promise<void>;
+    getCloudflareConfigured(): Promise<boolean>;
+    uploadImageToCloudflare(imageData: Uint8Array): Promise<string>;
 }
