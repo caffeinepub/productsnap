@@ -23,7 +23,6 @@ export default defineConfig({
     postcss: "./postcss.config.js",
   },
   optimizeDeps: {
-    exclude: ["@huggingface/transformers"],
     esbuildOptions: {
       define: {
         global: "globalThis",
