@@ -6,7 +6,6 @@ import {
   Layers,
   Loader2,
   Plus,
-  SkipForward,
   Sun,
   Upload,
   Wand2,
@@ -20,6 +19,7 @@ import { useCamera } from "../../camera/useCamera";
 type Phase =
   | "capture"
   | "processing"
+  | "confirm-removal"
   | "background"
   | "shadow"
   | "uploading"
@@ -243,18 +243,12 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
       const resultBlob = await mod.removeBackground(file);
       const resultUrl = URL.createObjectURL(resultBlob);
       setProcessedUrl(resultUrl);
-      toast.success("Background removed!");
+      setPhase("confirm-removal");
     } catch {
       toast.info("Background removal unavailable \u2014 using original image.");
-    } finally {
       setPhase("background");
     }
   }, []);
-
-  const handleSkipBgRemoval = () => {
-    if (capturedObjectUrl) setProcessedUrl(capturedObjectUrl);
-    setPhase("shadow");
-  };
 
   const handleConvertAndUpload = async () => {
     if (!processedUrl) return;
@@ -485,6 +479,91 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
           </motion.div>
         )}
 
+        {phase === "confirm-removal" && (
+          <motion.div
+            key="confirm-removal"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="flex flex-col gap-5"
+          >
+            <div className="text-center">
+              <div className="inline-flex items-center gap-1.5 bg-primary/10 text-primary text-xs font-600 px-3 py-1 rounded-full mb-2">
+                <Wand2 className="w-3 h-3" />
+                Background Removed
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Choose which version to use
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-2">
+                <div
+                  className="rounded-xl overflow-hidden border-2 border-border bg-card flex items-center justify-center"
+                  style={{ aspectRatio: "1", minHeight: 130 }}
+                >
+                  {capturedObjectUrl && (
+                    <img
+                      src={capturedObjectUrl}
+                      alt="Original"
+                      className="w-full h-full object-contain"
+                    />
+                  )}
+                </div>
+                <p className="text-xs font-600 text-center text-muted-foreground">
+                  Original
+                </p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <div
+                  className="rounded-xl overflow-hidden border-2 border-primary/60 flex items-center justify-center"
+                  style={{
+                    aspectRatio: "1",
+                    minHeight: 130,
+                    backgroundImage:
+                      "repeating-conic-gradient(#e5e7eb 0% 25%, #fff 0% 50%)",
+                    backgroundSize: "16px 16px",
+                  }}
+                >
+                  {processedUrl && (
+                    <img
+                      src={processedUrl}
+                      alt="Background Removed"
+                      className="w-full h-full object-contain"
+                    />
+                  )}
+                </div>
+                <p className="text-xs font-600 text-center text-primary">
+                  Removed
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <Button
+                data-ocid="image.secondary_button"
+                variant="outline"
+                className="flex-1 h-12"
+                onClick={() => {
+                  if (capturedObjectUrl) setProcessedUrl(capturedObjectUrl);
+                  setPhase("shadow");
+                }}
+              >
+                Skip / Keep Original
+              </Button>
+              <Button
+                data-ocid="image.primary_button"
+                className="flex-1 h-12 bg-primary text-primary-foreground font-600"
+                onClick={() => setPhase("background")}
+              >
+                <Wand2 className="w-4 h-4 mr-2" />
+                Use Removed
+              </Button>
+            </div>
+          </motion.div>
+        )}
+
         {phase === "background" && (
           <motion.div
             key="background"
@@ -544,24 +623,13 @@ export function StepImage({ capturedImageUrls, onUpdate }: StepImageProps) {
                 ))}
               </div>
             </div>
-            <div className="flex gap-3">
-              <Button
-                data-ocid="image.secondary_button"
-                variant="outline"
-                className="flex-1 h-12"
-                onClick={handleSkipBgRemoval}
-              >
-                <SkipForward className="w-4 h-4 mr-2" />
-                Skip
-              </Button>
-              <Button
-                className="flex-1 h-12 bg-primary text-primary-foreground font-600"
-                onClick={() => setPhase("shadow")}
-              >
-                <Sun className="w-4 h-4 mr-2" />
-                Next: Shadows
-              </Button>
-            </div>
+            <Button
+              className="w-full h-12 bg-primary text-primary-foreground font-600"
+              onClick={() => setPhase("shadow")}
+            >
+              <Sun className="w-4 h-4 mr-2" />
+              Next: Shadows
+            </Button>
           </motion.div>
         )}
 
