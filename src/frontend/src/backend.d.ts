@@ -37,12 +37,12 @@ export interface backendInterface {
     createEntry(sku: string, productName: string, capturedImageUrls: string, searchImageUrls: string): Promise<ProductEntry>;
     deleteEntry(id: bigint): Promise<void>;
     getAllEntries(): Promise<Array<ProductEntry>>;
+    getCloudflareConfigured(): Promise<boolean>;
     getEntriesByDateRange(fromTimestamp: bigint, toTimestamp: bigint): Promise<Array<ProductEntry>>;
     getEntry(id: bigint): Promise<ProductEntry>;
     searchImages(searchQuery: string): Promise<string>;
+    setCloudflareConfig(accountId: string, apiToken: string): Promise<void>;
     transform(input: TransformationInput): Promise<TransformationOutput>;
     updateEntry(id: bigint, sku: string, productName: string, capturedImageUrls: string, searchImageUrls: string): Promise<ProductEntry>;
-    setCloudflareConfig(accountId: string, apiToken: string): Promise<void>;
-    getCloudflareConfigured(): Promise<boolean>;
     uploadImageToCloudflare(imageData: Uint8Array): Promise<string>;
 }

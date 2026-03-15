@@ -136,11 +136,14 @@ export interface backendInterface {
     createEntry(sku: string, productName: string, capturedImageUrls: string, searchImageUrls: string): Promise<ProductEntry>;
     deleteEntry(id: bigint): Promise<void>;
     getAllEntries(): Promise<Array<ProductEntry>>;
+    getCloudflareConfigured(): Promise<boolean>;
     getEntriesByDateRange(fromTimestamp: bigint, toTimestamp: bigint): Promise<Array<ProductEntry>>;
     getEntry(id: bigint): Promise<ProductEntry>;
     searchImages(searchQuery: string): Promise<string>;
+    setCloudflareConfig(accountId: string, apiToken: string): Promise<void>;
     transform(input: TransformationInput): Promise<TransformationOutput>;
     updateEntry(id: bigint, sku: string, productName: string, capturedImageUrls: string, searchImageUrls: string): Promise<ProductEntry>;
+    uploadImageToCloudflare(imageData: Uint8Array): Promise<string>;
 }
 import type { _CaffeineStorageRefillInformation as __CaffeineStorageRefillInformation, _CaffeineStorageRefillResult as __CaffeineStorageRefillResult } from "./declarations/backend.did.d.ts";
 export class Backend implements backendInterface {
@@ -271,6 +274,20 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async getCloudflareConfigured(): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getCloudflareConfigured();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getCloudflareConfigured();
+            return result;
+        }
+    }
     async getEntriesByDateRange(arg0: bigint, arg1: bigint): Promise<Array<ProductEntry>> {
         if (this.processError) {
             try {
@@ -313,6 +330,20 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+    async setCloudflareConfig(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.setCloudflareConfig(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.setCloudflareConfig(arg0, arg1);
+            return result;
+        }
+    }
     async transform(arg0: TransformationInput): Promise<TransformationOutput> {
         if (this.processError) {
             try {
@@ -341,45 +372,17 @@ export class Backend implements backendInterface {
             return result;
         }
     }
-    async setCloudflareConfig(arg0: string, arg1: string): Promise<void> {
-        if (this.processError) {
-            try {
-                const result = await (this.actor as any).setCloudflareConfig(arg0, arg1);
-                return result;
-            } catch (e) {
-                this.processError(e);
-                throw new Error("unreachable");
-            }
-        } else {
-            const result = await (this.actor as any).setCloudflareConfig(arg0, arg1);
-            return result;
-        }
-    }
-    async getCloudflareConfigured(): Promise<boolean> {
-        if (this.processError) {
-            try {
-                const result = await (this.actor as any).getCloudflareConfigured();
-                return result;
-            } catch (e) {
-                this.processError(e);
-                throw new Error("unreachable");
-            }
-        } else {
-            const result = await (this.actor as any).getCloudflareConfigured();
-            return result;
-        }
-    }
     async uploadImageToCloudflare(arg0: Uint8Array): Promise<string> {
         if (this.processError) {
             try {
-                const result = await (this.actor as any).uploadImageToCloudflare(arg0);
+                const result = await this.actor.uploadImageToCloudflare(arg0);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await (this.actor as any).uploadImageToCloudflare(arg0);
+            const result = await this.actor.uploadImageToCloudflare(arg0);
             return result;
         }
     }

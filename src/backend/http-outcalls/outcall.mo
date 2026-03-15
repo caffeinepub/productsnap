@@ -81,11 +81,12 @@ module {
       { name = "User-Agent"; value = "caffeine.ai" },
       { name = "Idempotency-Key"; value = "Time-" # Time.now().toText() },
     ]);
+    let requestBody = Blob.fromArray(body);
     let httpRequest : IC.http_request_args = {
       url;
       max_response_bytes = null;
       headers;
-      body = ?Blob.fromArray(body);
+      body = ?requestBody;
       method = #post;
       transform = ?{
         function = transform;

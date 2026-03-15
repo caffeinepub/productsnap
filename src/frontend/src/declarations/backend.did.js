@@ -80,13 +80,13 @@ export const idlService = IDL.Service({
     ),
   'deleteEntry' : IDL.Func([IDL.Nat], [], []),
   'getAllEntries' : IDL.Func([], [IDL.Vec(ProductEntry)], ['query']),
+  'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
   'getEntriesByDateRange' : IDL.Func(
       [IDL.Int, IDL.Int],
       [IDL.Vec(ProductEntry)],
       ['query'],
     ),
   'getEntry' : IDL.Func([IDL.Nat], [ProductEntry], ['query']),
-  'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
   'searchImages' : IDL.Func([IDL.Text], [IDL.Text], []),
   'setCloudflareConfig' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'transform' : IDL.Func(
@@ -174,13 +174,13 @@ export const idlFactory = ({ IDL }) => {
       ),
     'deleteEntry' : IDL.Func([IDL.Nat], [], []),
     'getAllEntries' : IDL.Func([], [IDL.Vec(ProductEntry)], ['query']),
+    'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
     'getEntriesByDateRange' : IDL.Func(
         [IDL.Int, IDL.Int],
         [IDL.Vec(ProductEntry)],
         ['query'],
       ),
     'getEntry' : IDL.Func([IDL.Nat], [ProductEntry], ['query']),
-    'getCloudflareConfigured' : IDL.Func([], [IDL.Bool], ['query']),
     'searchImages' : IDL.Func([IDL.Text], [IDL.Text], []),
     'setCloudflareConfig' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'transform' : IDL.Func(

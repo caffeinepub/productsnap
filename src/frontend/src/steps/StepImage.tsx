@@ -11,6 +11,7 @@ import {
   Plus,
   Sun,
   Upload,
+  X,
   ZoomIn,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -20,7 +21,14 @@ import { ExternalBlob } from "../../blob-storage/ExternalBlob";
 import { useCamera } from "../../camera/useCamera";
 import type { backendInterface } from "../backend";
 
-type Phase = "capture" | "background" | "shadow" | "uploading" | "done";
+type Phase =
+  | "capture"
+  | "removing"
+  | "bgcompare"
+  | "background"
+  | "shadow"
+  | "uploading"
+  | "done";
 type ShadowType = "none" | "soft" | "hard" | "bottom";
 
 interface CloudflareActor extends backendInterface {
@@ -78,11 +86,89 @@ function getShadowStyle(shadow: ShadowType): string {
   }
 }
 
+async function removeBackground(imageUrl: string): Promise<string> {
+  try {
+    const transformers = await import(
+      /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/dist/transformers.min.js"
+    );
+    const { AutoModel, AutoProcessor, RawImage, env } = transformers;
+
+    (env as Record<string, unknown>).allowLocalModels = false;
+    if ((env as Record<string, unknown>).backends) {
+      const backends = (env as Record<string, unknown>).backends as Record<
+        string,
+        unknown
+      >;
+      if (backends.onnx) {
+        (backends.onnx as Record<string, unknown>).wasm = {
+          ...((backends.onnx as Record<string, unknown>).wasm as object),
+          numThreads: 1,
+        };
+      }
+    }
+
+    const model = await AutoModel.from_pretrained("briaai/RMBG-1.4", {
+      config: { model_type: "custom" },
+    });
+    const processor = await AutoProcessor.from_pretrained("briaai/RMBG-1.4", {
+      config: {
+        do_normalize: true,
+        do_pad: false,
+        do_rescale: true,
+        do_resize: true,
+        image_mean: [0.5, 0.5, 0.5],
+        feature_extractor_type: "ImageFeatureExtractor",
+        image_std: [1, 1, 1],
+        resample: 2,
+        rescale_factor: 0.00392156862745098,
+        size: { width: 1024, height: 1024 },
+      },
+    });
+
+    const image = await RawImage.fromURL(imageUrl);
+    const inputs = await processor(image);
+    const { output } = await model(inputs);
+
+    const maskTensor = output[0].mul(255).to("uint8");
+    const maskImage = await RawImage.fromTensor(maskTensor).resize(
+      image.width,
+      image.height,
+    );
+    const maskData = maskImage.data;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas not supported");
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = reject;
+      img.src = imageUrl;
+    });
+    ctx.drawImage(img, 0, 0);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < maskData.length; i++) {
+      imageData.data[i * 4 + 3] = maskData[i];
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    return canvas.toDataURL("image/png");
+  } catch (err) {
+    console.error("[BgRemoval] Failed:", err);
+    throw err;
+  }
+}
+
 async function compositeImageToAvif(
   imageUrl: string,
   bgIndex: number,
   shadow: ShadowType,
-): Promise<{ blob: Blob; sizeKb: number }> {
+): Promise<{ blob: Blob; sizeKb: number; format: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -141,6 +227,13 @@ async function compositeImageToAvif(
       ctx.shadowOffsetY = 0;
       ctx.shadowColor = "transparent";
 
+      const supportsAvif = canvas
+        .toDataURL("image/avif")
+        .startsWith("data:image/avif");
+
+      const chosenFormat = supportsAvif ? "image/avif" : "image/webp";
+      const chosenExt = supportsAvif ? "avif" : "webp";
+
       const tryEncode = (format: string, quality: number) => {
         canvas.toBlob(
           (blob) => {
@@ -152,7 +245,7 @@ async function compositeImageToAvif(
             if (sizeKb > 250 && quality > 0.3) {
               tryEncode(format, Math.max(0.3, quality - 0.15));
             } else {
-              resolve({ blob, sizeKb: Math.round(sizeKb) });
+              resolve({ blob, sizeKb: Math.round(sizeKb), format: chosenExt });
             }
           },
           format,
@@ -160,13 +253,10 @@ async function compositeImageToAvif(
         );
       };
 
-      const supportsAvif = canvas
-        .toDataURL("image/avif")
-        .startsWith("data:image/avif");
       if (supportsAvif) {
-        tryEncode("image/avif", 0.7);
+        tryEncode(chosenFormat, 0.7);
       } else {
-        tryEncode("image/webp", 0.8);
+        tryEncode(chosenFormat, 0.8);
       }
     };
     img.onerror = reject;
@@ -193,6 +283,8 @@ export function StepImage({
     null,
   );
   const [processedUrl, setProcessedUrl] = useState<string | null>(null);
+  const [bgRemovedUrl, setBgRemovedUrl] = useState<string | null>(null);
+  const [bgRemovalStatus, setBgRemovalStatus] = useState<string>("");
   const [selectedBg, setSelectedBg] = useState(0);
   const [selectedShadow, setSelectedShadow] = useState<ShadowType>("none");
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -280,16 +372,38 @@ export function StepImage({
     const objectUrl = URL.createObjectURL(file);
     setCapturedObjectUrl(objectUrl);
     setProcessedUrl(objectUrl);
-    // Skip background removal processing — go straight to background selection
-    setPhase("background");
+    setBgRemovedUrl(null);
+    setPhase("removing");
+    setBgRemovalStatus("Loading AI model (~40 MB on first use)...");
+
+    try {
+      setBgRemovalStatus("Removing background...");
+      const removedUrl = await removeBackground(objectUrl);
+      setBgRemovedUrl(removedUrl);
+      setPhase("bgcompare");
+    } catch {
+      toast.info("Background removal unavailable — showing original image.");
+      setPhase("background");
+    }
   }, []);
+
+  const handleUseRemoved = () => {
+    if (bgRemovedUrl) {
+      setProcessedUrl(bgRemovedUrl);
+    }
+    setPhase("background");
+  };
+
+  const handleKeepOriginal = () => {
+    setPhase("background");
+  };
 
   const handleConvertAndUpload = async () => {
     if (!processedUrl) return;
     setPhase("uploading");
     setUploadProgress(0);
     try {
-      const { blob, sizeKb } = await compositeImageToAvif(
+      const { blob, sizeKb, format } = await compositeImageToAvif(
         processedUrl,
         selectedBg,
         selectedShadow,
@@ -306,7 +420,7 @@ export function StepImage({
         ).uploadImageToCloudflare(bytes);
         const data = JSON.parse(jsonResponse);
         if (data.success && data.result?.variants?.length > 0) {
-          url = data.result.variants[0] as string;
+          url = `${data.result.variants[0]}?filename=product.avif`;
           setUsedCloudflare(true);
         } else {
           throw new Error(
@@ -318,7 +432,8 @@ export function StepImage({
         const externalBlob = ExternalBlob.fromBytes(bytes).withUploadProgress(
           (pct) => setUploadProgress(pct),
         );
-        url = externalBlob.getDirectURL();
+        const rawUrl = externalBlob.getDirectURL();
+        url = `${rawUrl}?filename=product.${format}`;
         setUsedCloudflare(false);
       }
 
@@ -339,6 +454,7 @@ export function StepImage({
       URL.revokeObjectURL(processedUrl);
     setCapturedObjectUrl(null);
     setProcessedUrl(null);
+    setBgRemovedUrl(null);
     setSelectedBg(0);
     setSelectedShadow("none");
     setLastSizeKb(null);
@@ -526,6 +642,90 @@ export function StepImage({
                 </p>
               </div>
             )}
+          </motion.div>
+        )}
+
+        {phase === "removing" && (
+          <motion.div
+            key="removing"
+            data-ocid="image.loading_state"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="flex flex-col items-center justify-center gap-5 py-10"
+          >
+            <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            </div>
+            <div className="text-center">
+              <p className="font-display font-700 text-lg">
+                Removing Background
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {bgRemovalStatus}
+              </p>
+            </div>
+          </motion.div>
+        )}
+
+        {phase === "bgcompare" && capturedObjectUrl && bgRemovedUrl && (
+          <motion.div
+            key="bgcompare"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="flex flex-col gap-4"
+          >
+            <p className="text-sm font-600 text-center text-muted-foreground">
+              Background removed — which version would you like to use?
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-2">
+                <div
+                  className="w-full rounded-xl overflow-hidden flex items-center justify-center"
+                  style={{
+                    background:
+                      "repeating-conic-gradient(#e5e7eb 0% 25%, #f9fafb 0% 50%) 0 0 / 16px 16px",
+                    minHeight: 140,
+                  }}
+                >
+                  <img
+                    src={bgRemovedUrl}
+                    alt="Background removed"
+                    className="max-h-36 w-auto object-contain"
+                  />
+                </div>
+                <Button
+                  data-ocid="image.primary_button"
+                  className="w-full h-10 bg-primary text-primary-foreground font-600"
+                  onClick={handleUseRemoved}
+                >
+                  <Check className="w-4 h-4 mr-1.5" />
+                  Use Removed
+                </Button>
+              </div>
+              <div className="flex flex-col gap-2">
+                <div
+                  className="w-full rounded-xl overflow-hidden flex items-center justify-center bg-muted"
+                  style={{ minHeight: 140 }}
+                >
+                  <img
+                    src={capturedObjectUrl}
+                    alt="Original"
+                    className="max-h-36 w-auto object-contain"
+                  />
+                </div>
+                <Button
+                  data-ocid="image.secondary_button"
+                  variant="outline"
+                  className="w-full h-10 font-600"
+                  onClick={handleKeepOriginal}
+                >
+                  <X className="w-4 h-4 mr-1.5" />
+                  Keep Original
+                </Button>
+              </div>
+            </div>
           </motion.div>
         )}
 
